@@ -18,24 +18,18 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 
-/**
- * Cliente WebSocket con reconexión automática y backoff exponencial.
- *
- * Eventos entrantes → SharedFlow<SocketEvent>
- * Estado de conexión → StateFlow<Boolean> (connected)
- */
 class ChatSocket(
     private val okHttpClient: OkHttpClient = ApiClient.okHttpClient,
     private val json: Json = ApiClient.json()
@@ -63,42 +57,32 @@ class ChatSocket(
 
     // ============ API PÚBLICA ============
 
-    /**
-     * Conecta con un token JWT.
-     */
     fun connect(token: String) {
         currentToken = token
         intentionallyClosed = false
         doConnect()
     }
 
-    /**
-     * Envía un mensaje de chat.
-     */
     fun sendMessage(content: String) {
         if (content.isBlank()) return
         if (content.length > 500) return
-        val payload = """{"type":"message","content":${json.encodeToString(String.serializer(), content)}}"""
+
+        val payload = buildJsonObject {
+            put("type", "message")
+            put("content", content)
+        }.toString()
+
         webSocket?.send(payload)
     }
 
-    /**
-     * Notifica que el usuario está escribiendo.
-     */
     fun startTyping() {
         webSocket?.send("""{"type":"typing"}""")
     }
 
-    /**
-     * Notifica que dejó de escribir.
-     */
     fun stopTyping() {
         webSocket?.send("""{"type":"stop_typing"}""")
     }
 
-    /**
-     * Cierra la conexión (no reconecta).
-     */
     fun disconnect() {
         intentionallyClosed = true
         reconnectJob?.cancel()
@@ -114,7 +98,8 @@ class ChatSocket(
     private fun doConnect() {
         val token = currentToken ?: return
 
-        val url = "${BuildConfig.WS_URL}?token=${java.net.URLEncoder.encode(token, "UTF-8")}"
+        val encoded = java.net.URLEncoder.encode(token, "UTF-8")
+        val url = "${BuildConfig.WS_URL}?token=$encoded"
         val request = Request.Builder().url(url).build()
 
         webSocket = okHttpClient.newWebSocket(request, object : WebSocketListener() {
@@ -156,15 +141,15 @@ class ChatSocket(
         if (reconnectJob?.isActive == true) return
 
         reconnectAttempts++
-        val delay = minOf(
+        val delayMs = minOf(
             INITIAL_RECONNECT_DELAY_MS * (1L shl (reconnectAttempts - 1).coerceAtMost(4)),
             MAX_RECONNECT_DELAY_MS
         )
 
-        Log.d(TAG, "Reconectando en ${delay}ms (intento $reconnectAttempts)")
+        Log.d(TAG, "Reconectando en ${delayMs}ms (intento $reconnectAttempts)")
 
         reconnectJob = scope.launch {
-            delay(delay)
+            delay(delayMs)
             if (!intentionallyClosed && currentToken != null) {
                 doConnect()
             }
@@ -175,9 +160,6 @@ class ChatSocket(
         _events.tryEmit(event)
     }
 
-    /**
-     * Parsea el JSON del servidor y emite el evento correspondiente.
-     */
     private fun parseAndEmit(text: String) {
         try {
             val obj = json.parseToJsonElement(text).jsonObject
