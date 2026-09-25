@@ -14,7 +14,6 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
-import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 data class ChatUiState(
@@ -43,18 +42,26 @@ class ChatViewModel(
     private val _typingUsers = MutableStateFlow<List<String>>(emptyList())
     private val _onlineCount = MutableStateFlow(0)
 
+    @Volatile
+    private var cachedUser: User? = null
+
     private var typingJob: Job? = null
     private var typingSent = false
     private var isAtBottom = true
 
     init {
-        // Conectar socket al arrancar
         viewModelScope.launch {
+            cachedUser = authRepo.getCurrentUser()
             val token = authRepo.getToken()
             if (token != null) chatRepo.connect(token)
         }
 
-        // Observar typing + online count del socket (los que no vienen de Room)
+        viewModelScope.launch {
+            authRepo.userFlow.collect { user ->
+                cachedUser = user
+            }
+        }
+
         observeSocketExtras()
     }
 
@@ -73,7 +80,7 @@ class ChatViewModel(
 
         viewModelScope.launch {
             chatRepo.typingEvents.collect { event ->
-                val myName = authRepo.getCurrentUser()?.name
+                val myName = cachedUser?.name
                 _typingUsers.value = event.users.filter { it != myName }
             }
         }
@@ -91,13 +98,11 @@ class ChatViewModel(
         }
     }
 
-    // ============ ESTADO DERIVADO (combine de 9 fuentes) ============
-
     val state: StateFlow<ChatUiState> = combine(
         authRepo.userFlow,
         _input,
-        chatRepo.messagesFlow,       // ← viene de Room (Flow)
-        chatRepo.onlineUsersFlow,    // ← viene de Room (Flow)
+        chatRepo.messagesFlow,
+        chatRepo.onlineUsersFlow,
         _onlineCount,
         _typingUsers,
         _showScrollToBottom,
@@ -135,8 +140,6 @@ class ChatViewModel(
         initialValue = ChatUiState()
     )
 
-    // ============ INPUT ============
-
     fun onInputChange(text: String) {
         if (text.length > 500) return
         _input.value = text
@@ -160,15 +163,14 @@ class ChatViewModel(
         val text = _input.value.trim()
         if (text.isBlank()) return
 
-        val user = authRepo.getCurrentUser()
-        if (user != null) {
-            chatRepo.sendMessage(
-                content = text,
-                currentUserId = user.id,
-                currentUserName = user.name,
-                currentUsername = user.username
-            )
-        }
+        val user = cachedUser ?: return
+
+        chatRepo.sendMessage(
+            content = text,
+            currentUserId = user.id,
+            currentUserName = user.name,
+            currentUsername = user.username
+        )
 
         _input.value = ""
 
@@ -177,8 +179,6 @@ class ChatViewModel(
             typingSent = false
         }
     }
-
-    // ============ SCROLL ============
 
     fun onScrollChanged(atBottom: Boolean) {
         isAtBottom = atBottom
@@ -192,8 +192,6 @@ class ChatViewModel(
     fun clearError() {
         _error.value = null
     }
-
-    // ============ LOGOUT ============
 
     fun logout(onDone: () -> Unit) {
         viewModelScope.launch {
