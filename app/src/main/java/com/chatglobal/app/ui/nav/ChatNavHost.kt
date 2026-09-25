@@ -13,6 +13,7 @@ import com.chatglobal.app.data.api.ApiClient
 import com.chatglobal.app.data.local.SessionManager
 import com.chatglobal.app.data.local.SessionState
 import com.chatglobal.app.data.local.TokenStore
+import com.chatglobal.app.data.local.db.ChatDatabase
 import com.chatglobal.app.data.repository.AuthRepository
 import com.chatglobal.app.data.repository.ChatRepository
 import com.chatglobal.app.data.websocket.ChatSocket
@@ -23,15 +24,15 @@ import com.chatglobal.app.ui.chat.ChatViewModel
 
 class ChatViewModelFactory(
     private val tokenStore: TokenStore,
-    private val sessionManager: SessionManager
+    private val database: ChatDatabase
 ) : ViewModelProvider.Factory {
 
     private val socket = ChatSocket()
-    private val chatRepository = ChatRepository(socket)
+    private val chatRepository = ChatRepository(socket, database)
 
     @Suppress("UNCHECKED_CAST")
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
-        val api = ApiClient.buildRetrofit(tokenStore) { /* 401 handled por interceptor */ }
+        val api = ApiClient.buildRetrofit(tokenStore) { /* 401 handled by interceptor */ }
         val authRepo = AuthRepository(api, tokenStore)
 
         return when {
@@ -51,6 +52,7 @@ fun ChatNavHost() {
     val context = LocalContext.current
     val tokenStore = remember { TokenStore(context.applicationContext) }
     val sessionManager = remember { SessionManager(tokenStore) }
+    val database = remember { ChatDatabase.get(context.applicationContext) }
 
     val session by sessionManager.sessionFlow
         .collectAsStateWithLifecycle(initialValue = SessionState.Loading)
@@ -58,14 +60,12 @@ fun ChatNavHost() {
     val navController = rememberNavController()
 
     val factory = remember {
-        ChatViewModelFactory(tokenStore, sessionManager)
+        ChatViewModelFactory(tokenStore, database)
     }
-
-    // ============ REACCIÓN AL ESTADO DE SESIÓN ============
 
     LaunchedEffect(session) {
         when (session) {
-            SessionState.Loading -> { /* esperar */ }
+            SessionState.Loading -> { }
             is SessionState.LoggedIn -> {
                 navController.navigate("chat") {
                     popUpTo("auth") { inclusive = true }
@@ -82,7 +82,7 @@ fun ChatNavHost() {
     }
 
     val startRoute = when (session) {
-        SessionState.Loading -> "auth"    // placeholder, se reemplaza al llegar la sesión
+        SessionState.Loading -> "auth"
         is SessionState.LoggedIn -> "chat"
         SessionState.LoggedOut -> "auth"
     }
@@ -100,9 +100,7 @@ fun ChatNavHost() {
             val vm: ChatViewModel = viewModel(factory = factory)
             ChatScreen(
                 viewModel = vm,
-                onLogout = {
-                    // El LaunchedEffect(session) navega automáticamente
-                }
+                onLogout = { }
             )
         }
     }

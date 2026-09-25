@@ -12,7 +12,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
@@ -41,11 +40,8 @@ class ChatViewModel(
     private val _input = MutableStateFlow("")
     private val _showScrollToBottom = MutableStateFlow(false)
     private val _error = MutableStateFlow<String?>(null)
-
-    private val _messages = MutableStateFlow<List<Message>>(emptyList())
-    private val _onlineUsers = MutableStateFlow<List<OnlineUser>>(emptyList())
-    private val _onlineCount = MutableStateFlow(0)
     private val _typingUsers = MutableStateFlow<List<String>>(emptyList())
+    private val _onlineCount = MutableStateFlow(0)
 
     private var typingJob: Job? = null
     private var typingSent = false
@@ -58,87 +54,20 @@ class ChatViewModel(
             if (token != null) chatRepo.connect(token)
         }
 
-        // Suscribirse a los eventos del socket
-        observeEvents()
-
-        // Suscribirse al estado de conexión
-        viewModelScope.launch {
-            chatRepo.connected.collect { /* manejado por eventos */ }
-        }
+        // Observar typing + online count del socket (los que no vienen de Room)
+        observeSocketExtras()
     }
 
-    // ============ ESTADO REACTIVO (STATE FLOW DERIVADO) ============
-
-    val state: StateFlow<ChatUiState> = combine(
-        authRepo.userFlow,
-        _input,
-        _messages,
-        _onlineUsers,
-        _onlineCount,
-        _typingUsers,
-        _showScrollToBottom,
-        _error,
-        chatRepo.connected
-    ) { values ->
-        val user = values[0] as User?
-        val input = values[1] as String
-        val messages = values[2] as List<Message>
-        val online = values[3] as List<OnlineUser>
-        val count = values[4] as Int
-        val typing = values[5] as List<String>
-        val scrollBtn = values[6] as Boolean
-        val err = values[7] as String?
-        val connected = values[8] as Boolean
-
-        ChatUiState(
-            loading = false,
-            connected = connected,
-            reconnecting = !connected && user != null,
-            currentUser = user,
-            messages = messages,
-            onlineUsers = online,
-            onlineCount = count,
-            typingUsers = typing,
-            inputText = input,
-            canSend = input.isNotBlank() && connected,
-            error = err,
-            showScrollToBottom = scrollBtn
-        )
-    }.stateIn(
-        scope = viewModelScope,
-        started = SharingStarted.WhileSubscribed(5000),
-        initialValue = ChatUiState()
-    )
-
-    // ============ EVENTOS DEL SOCKET ============
-
-    private fun observeEvents() {
+    private fun observeSocketExtras() {
         viewModelScope.launch {
-            chatRepo.newMessages.collect { event ->
-                val isMine = event.message.user.id == authRepo.getCurrentUser()?.id
-                _messages.update { it + event.message }
-                if (!isMine && !isAtBottom) {
-                    _showScrollToBottom.value = true
-                }
-            }
-        }
-
-        viewModelScope.launch {
-            chatRepo.historyEvents.collect { event ->
-                _messages.value = event.messages
+            chatRepo.welcomeEvents.collect { event ->
+                _onlineCount.value = event.onlineCount
             }
         }
 
         viewModelScope.launch {
             chatRepo.onlineUsersEvents.collect { event ->
-                _onlineUsers.value = event.users
                 _onlineCount.value = event.count
-            }
-        }
-
-        viewModelScope.launch {
-            chatRepo.welcomeEvents.collect { event ->
-                _onlineCount.value = event.onlineCount
             }
         }
 
@@ -154,7 +83,57 @@ class ChatViewModel(
                 _error.value = event.message
             }
         }
+
+        viewModelScope.launch {
+            chatRepo.newMessages.collect {
+                if (!isAtBottom) _showScrollToBottom.value = true
+            }
+        }
     }
+
+    // ============ ESTADO DERIVADO (combine de 9 fuentes) ============
+
+    val state: StateFlow<ChatUiState> = combine(
+        authRepo.userFlow,
+        _input,
+        chatRepo.messagesFlow,       // ← viene de Room (Flow)
+        chatRepo.onlineUsersFlow,    // ← viene de Room (Flow)
+        _onlineCount,
+        _typingUsers,
+        _showScrollToBottom,
+        _error,
+        chatRepo.connected
+    ) { values ->
+        @Suppress("UNCHECKED_CAST")
+        val user = values[0] as User?
+        val input = values[1] as String
+        val messages = values[2] as List<Message>
+        val online = values[3] as List<OnlineUser>
+        val count = values[4] as Int
+        val typing = values[5] as List<String>
+        val scrollBtn = values[6] as Boolean
+        val err = values[7] as String?
+        val isConnected = values[8] as Boolean
+
+        ChatUiState(
+            loading = false,
+            connected = isConnected,
+            reconnecting = !isConnected && user != null,
+            currentUser = user,
+            messages = messages,
+            onlineUsers = online,
+            onlineCount = count,
+            typingUsers = typing,
+            inputText = input,
+            canSend = input.isNotBlank() && isConnected,
+            error = err,
+            showScrollToBottom = scrollBtn
+        )
+    }.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5000),
+        initialValue = ChatUiState()
+    )
 
     // ============ INPUT ============
 
@@ -181,7 +160,16 @@ class ChatViewModel(
         val text = _input.value.trim()
         if (text.isBlank()) return
 
-        chatRepo.sendMessage(text)
+        val user = authRepo.getCurrentUser()
+        if (user != null) {
+            chatRepo.sendMessage(
+                content = text,
+                currentUserId = user.id,
+                currentUserName = user.name,
+                currentUsername = user.username
+            )
+        }
+
         _input.value = ""
 
         if (typingSent) {
@@ -210,6 +198,7 @@ class ChatViewModel(
     fun logout(onDone: () -> Unit) {
         viewModelScope.launch {
             chatRepo.disconnect()
+            chatRepo.clearLocalCache()
             authRepo.logout()
             onDone()
         }
