@@ -4,13 +4,17 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.chatglobal.app.data.api.ApiClient
+import com.chatglobal.app.data.local.SessionManager
+import com.chatglobal.app.data.local.SessionState
 import com.chatglobal.app.data.local.TokenStore
 import com.chatglobal.app.data.repository.AuthRepository
+import com.chatglobal.app.data.repository.ChatRepository
 import com.chatglobal.app.data.websocket.ChatSocket
 import com.chatglobal.app.ui.auth.AuthScreen
 import com.chatglobal.app.ui.auth.AuthViewModel
@@ -19,15 +23,15 @@ import com.chatglobal.app.ui.chat.ChatViewModel
 
 class ChatViewModelFactory(
     private val tokenStore: TokenStore,
-    private val onUnauthorized: () -> Unit
+    private val sessionManager: SessionManager
 ) : ViewModelProvider.Factory {
 
-    // Compartimos UNA sola instancia del socket para toda la app
     private val socket = ChatSocket()
+    private val chatRepository = ChatRepository(socket)
 
     @Suppress("UNCHECKED_CAST")
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
-        val api = ApiClient.buildRetrofit(tokenStore, onUnauthorized)
+        val api = ApiClient.buildRetrofit(tokenStore) { /* 401 handled por interceptor */ }
         val authRepo = AuthRepository(api, tokenStore)
 
         return when {
@@ -35,7 +39,7 @@ class ChatViewModelFactory(
                 AuthViewModel(authRepo) as T
 
             modelClass.isAssignableFrom(ChatViewModel::class.java) ->
-                ChatViewModel(authRepo, socket) as T
+                ChatViewModel(authRepo, chatRepository) as T
 
             else -> throw IllegalArgumentException("VM desconocido: ${modelClass.name}")
         }
@@ -45,38 +49,51 @@ class ChatViewModelFactory(
 @Composable
 fun ChatNavHost() {
     val context = LocalContext.current
-    val navController = rememberNavController()
     val tokenStore = remember { TokenStore(context.applicationContext) }
+    val sessionManager = remember { SessionManager(tokenStore) }
 
-    var startRoute by remember { mutableStateOf<String?>(null) }
+    val session by sessionManager.sessionFlow
+        .collectAsStateWithLifecycle(initialValue = SessionState.Loading)
 
-    LaunchedEffect(Unit) {
-        startRoute = if (tokenStore.getToken() != null) "chat" else "auth"
-    }
+    val navController = rememberNavController()
 
     val factory = remember {
-        ChatViewModelFactory(tokenStore) {
-            navController.navigate("auth") {
-                popUpTo(0) { inclusive = true }
-                launchSingleTop = true
-            }
-        }
+        ChatViewModelFactory(tokenStore, sessionManager)
     }
 
-    val route = startRoute ?: return
+    // ============ REACCIÓN AL ESTADO DE SESIÓN ============
 
-    NavHost(
-        navController = navController,
-        startDestination = route
-    ) {
-        composable("auth") {
-            val vm: AuthViewModel = viewModel(factory = factory)
-            AuthScreen(vm) {
+    LaunchedEffect(session) {
+        when (session) {
+            SessionState.Loading -> { /* esperar */ }
+            is SessionState.LoggedIn -> {
                 navController.navigate("chat") {
                     popUpTo("auth") { inclusive = true }
                     launchSingleTop = true
                 }
             }
+            SessionState.LoggedOut -> {
+                navController.navigate("auth") {
+                    popUpTo(0) { inclusive = true }
+                    launchSingleTop = true
+                }
+            }
+        }
+    }
+
+    val startRoute = when (session) {
+        SessionState.Loading -> "auth"    // placeholder, se reemplaza al llegar la sesión
+        is SessionState.LoggedIn -> "chat"
+        SessionState.LoggedOut -> "auth"
+    }
+
+    NavHost(
+        navController = navController,
+        startDestination = startRoute
+    ) {
+        composable("auth") {
+            val vm: AuthViewModel = viewModel(factory = factory)
+            AuthScreen(vm)
         }
 
         composable("chat") {
@@ -84,10 +101,7 @@ fun ChatNavHost() {
             ChatScreen(
                 viewModel = vm,
                 onLogout = {
-                    navController.navigate("auth") {
-                        popUpTo(0) { inclusive = true }
-                        launchSingleTop = true
-                    }
+                    // El LaunchedEffect(session) navega automáticamente
                 }
             )
         }

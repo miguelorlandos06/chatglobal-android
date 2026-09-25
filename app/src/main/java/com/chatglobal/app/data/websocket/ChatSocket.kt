@@ -55,8 +55,6 @@ class ChatSocket(
     private var currentToken: String? = null
     private var intentionallyClosed = false
 
-    // ============ API PÚBLICA ============
-
     fun connect(token: String) {
         currentToken = token
         intentionallyClosed = false
@@ -92,8 +90,6 @@ class ChatSocket(
         webSocket = null
         _connected.value = false
     }
-
-    // ============ INTERNO ============
 
     private fun doConnect() {
         val token = currentToken ?: return

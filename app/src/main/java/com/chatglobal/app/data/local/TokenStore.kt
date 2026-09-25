@@ -16,10 +16,12 @@ class TokenStore(private val context: Context) {
 
     companion object {
         private val TOKEN_KEY = stringPreferencesKey("token")
-        private val USER_KEY  = stringPreferencesKey("user_json")
+        private val USER_KEY = stringPreferencesKey("user_json")
     }
 
     private val json = Json { ignoreUnknownKeys = true }
+
+    // ============ WRITE ============
 
     suspend fun save(token: String, user: User) {
         context.dataStore.edit { prefs ->
@@ -28,22 +30,30 @@ class TokenStore(private val context: Context) {
         }
     }
 
-    suspend fun getToken(): String? =
-        context.dataStore.data.map { it[TOKEN_KEY] }.first()
-
-    suspend fun getUser(): User? =
-        context.dataStore.data.map { prefs ->
-            prefs[USER_KEY]?.let {
-                runCatching {
-                    json.decodeFromString(User.serializer(), it)
-                }.getOrNull()
-            }
-        }.first()
-
-    fun tokenFlow(): Flow<String?> =
-        context.dataStore.data.map { it[TOKEN_KEY] }
-
     suspend fun clear() {
         context.dataStore.edit { it.clear() }
     }
+
+    // ============ REACTIVE (Flow) ============
+
+    val tokenFlow: Flow<String?> = context.dataStore.data
+        .map { prefs -> prefs[TOKEN_KEY] }
+
+    val userFlow: Flow<User?> = context.dataStore.data
+        .map { prefs ->
+            prefs[USER_KEY]?.let { raw ->
+                runCatching {
+                    json.decodeFromString(User.serializer(), raw)
+                }.getOrNull()
+            }
+        }
+
+    val isLoggedInFlow: Flow<Boolean> = context.dataStore.data
+        .map { prefs -> !prefs[TOKEN_KEY].isNullOrBlank() }
+
+    // ============ ONE-SHOT (suspend) ============
+
+    suspend fun getToken(): String? = tokenFlow.first()
+    suspend fun getUser(): User? = userFlow.first()
+    suspend fun isLoggedIn(): Boolean = isLoggedInFlow.first()
 }

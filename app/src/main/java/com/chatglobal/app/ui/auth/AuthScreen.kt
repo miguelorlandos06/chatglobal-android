@@ -13,33 +13,27 @@ import androidx.compose.material.icons.filled.ChatBubble
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
 @Composable
-fun AuthScreen(
-    viewModel: AuthViewModel,
-    onSuccess: () -> Unit
-) {
-    var tab by remember { mutableStateOf("login") }
-    var name by remember { mutableStateOf("") }
-    var username by remember { mutableStateOf("") }
-    var password by remember { mutableStateOf("") }
-    var showPassword by remember { mutableStateOf(false) }
-    val state by viewModel.state.collectAsState()
-
-    LaunchedEffect(state.user, state.token) {
-        if (state.user != null && state.token != null) onSuccess()
-    }
+fun AuthScreen(viewModel: AuthViewModel) {
+    val state by viewModel.state.collectAsStateWithLifecycle()
+    val focusManager = LocalFocusManager.current
 
     Column(
         modifier = Modifier
@@ -51,7 +45,6 @@ fun AuthScreen(
     ) {
         Spacer(Modifier.height(48.dp))
 
-        // ============ LOGO ============
         Box(
             Modifier
                 .size(72.dp)
@@ -86,24 +79,18 @@ fun AuthScreen(
 
         Spacer(Modifier.height(40.dp))
 
-        // ============ TABS ============
         Row(Modifier.fillMaxWidth()) {
-            listOf("login" to "Iniciar sesión", "register" to "Registrarse")
-                .forEach { (key, label) ->
+            listOf(AuthTab.LOGIN to "Iniciar sesión", AuthTab.REGISTER to "Registrarse")
+                .forEach { (tab, label) ->
                     Column(
                         modifier = Modifier
                             .weight(1f)
-                            .clickable {
-                                if (tab != key) {
-                                    tab = key
-                                    viewModel.clearError()
-                                }
-                            },
+                            .clickable { viewModel.setTab(tab) },
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
                         Text(
                             label,
-                            color = if (tab == key)
+                            color = if (state.tab == tab)
                                 MaterialTheme.colorScheme.onBackground
                             else
                                 MaterialTheme.colorScheme.onSurfaceVariant,
@@ -115,7 +102,8 @@ fun AuthScreen(
                                 .fillMaxWidth()
                                 .height(2.dp)
                                 .background(
-                                    if (tab == key) MaterialTheme.colorScheme.primary
+                                    if (state.tab == tab)
+                                        MaterialTheme.colorScheme.primary
                                     else Color.Transparent
                                 )
                         )
@@ -125,14 +113,10 @@ fun AuthScreen(
 
         Spacer(Modifier.height(24.dp))
 
-        // ============ CAMPO NOMBRE (solo registro) ============
-        if (tab == "register") {
+        if (state.tab == AuthTab.REGISTER) {
             OutlinedTextField(
-                value = name,
-                onValueChange = {
-                    name = it
-                    if (state.error != null) viewModel.clearError()
-                },
+                value = state.name,
+                onValueChange = viewModel::setName,
                 label = { Text("Nombre") },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
@@ -144,13 +128,9 @@ fun AuthScreen(
             Spacer(Modifier.height(12.dp))
         }
 
-        // ============ USUARIO ============
         OutlinedTextField(
-            value = username,
-            onValueChange = {
-                username = it.filter { c -> c.isLetterOrDigit() || c == '_' }
-                if (state.error != null) viewModel.clearError()
-            },
+            value = state.username,
+            onValueChange = viewModel::setUsername,
             label = { Text("Usuario") },
             modifier = Modifier.fillMaxWidth(),
             singleLine = true,
@@ -161,24 +141,20 @@ fun AuthScreen(
         )
         Spacer(Modifier.height(12.dp))
 
-        // ============ CONTRASEÑA ============
         OutlinedTextField(
-            value = password,
-            onValueChange = {
-                password = it
-                if (state.error != null) viewModel.clearError()
-            },
+            value = state.password,
+            onValueChange = viewModel::setPassword,
             label = { Text("Contraseña") },
-            visualTransformation = if (showPassword)
+            visualTransformation = if (state.showPassword)
                 VisualTransformation.None else PasswordVisualTransformation(),
             keyboardOptions = KeyboardOptions(
                 keyboardType = KeyboardType.Password,
                 imeAction = ImeAction.Done
             ),
             trailingIcon = {
-                IconButton(onClick = { showPassword = !showPassword }) {
+                IconButton(onClick = viewModel::toggleShowPassword) {
                     Icon(
-                        imageVector = if (showPassword)
+                        imageVector = if (state.showPassword)
                             Icons.Default.VisibilityOff else Icons.Default.Visibility,
                         contentDescription = null,
                         tint = MaterialTheme.colorScheme.onSurfaceVariant
@@ -194,10 +170,12 @@ fun AuthScreen(
 
         Spacer(Modifier.height(24.dp))
 
-        // ============ BOTÓN ============
         Button(
-            onClick = { viewModel.submit(tab, name, username, password) },
-            enabled = !state.loading,
+            onClick = {
+                focusManager.clearFocus()
+                viewModel.submit()
+            },
+            enabled = state.canSubmit && !state.loading,
             modifier = Modifier.fillMaxWidth().height(48.dp),
             colors = ButtonDefaults.buttonColors(
                 containerColor = MaterialTheme.colorScheme.primary,
@@ -212,13 +190,12 @@ fun AuthScreen(
                 )
             } else {
                 Text(
-                    if (tab == "login") "Iniciar sesión" else "Crear cuenta",
+                    if (state.tab == AuthTab.LOGIN) "Iniciar sesión" else "Crear cuenta",
                     fontWeight = FontWeight.Medium
                 )
             }
         }
 
-        // ============ ERROR ============
         state.error?.let {
             Spacer(Modifier.height(16.dp))
             Surface(
